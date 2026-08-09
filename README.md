@@ -209,6 +209,54 @@ prompt = "An oil painting of a dog playing chess"
 
 ---
 
+### 💬 Script 3: `chat_agent.py` — Live Web Agent with Memory
+
+**What it does:** An interactive, terminal-based chatbot that keeps track of your conversation history and streams the AI's response word-by-word (just like ChatGPT). Because it runs on the `felo/auto` model, **it natively searches the real-time internet** for you to answer questions about current events.
+
+```python
+import urllib.request
+import json
+
+url = "http://localhost:20128/v1/chat/completions"
+messages = [{"role": "system", "content": "You are a helpful AI assistant."}]
+
+while True:
+    user_input = input("You: ")
+    if user_input.lower() in ['exit', 'quit']: break
+        
+    messages.append({"role": "user", "content": user_input})
+    data = {"model": "felo/auto", "stream": True, "messages": messages}
+    
+    req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), 
+                                 headers={'Content-Type': 'application/json', 'Authorization': 'Bearer dummy'})
+    
+    print("Agent: ", end="", flush=True)
+    full_response = ""
+    with urllib.request.urlopen(req) as response:
+        for line in response:
+            line = line.decode('utf-8').strip()
+            if line.startswith("data: ") and line != "data: [DONE]":
+                try:
+                    content = json.loads(line[6:])['choices'][0].get('delta', {}).get('content', '')
+                    print(content, end="", flush=True)
+                    full_response += content
+                except: pass
+    print("\n")
+    messages.append({"role": "assistant", "content": full_response})
+```
+
+**How to run:**
+```bash
+python chat_agent.py
+```
+
+**Features shown in this script:**
+- **Streaming:** Receiving the answer in real-time chunks
+- **Memory:** Passing the `messages` array back and forth so the AI remembers context
+- **Web Search:** Ask it about today's weather or news, and it will search the web!
+
+---
+
 ## 🎛️ Using OmniRoute in Your AI Coding Tools
 
 Point any OpenAI-compatible tool at your local server:
