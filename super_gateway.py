@@ -139,6 +139,29 @@ async def try_upstream_stream(url: str, payload: dict, headers: dict) -> AsyncGe
                 return
             raise HTTPException(status_code=resp.status_code, detail="Upstream streaming failed")
 
+LLM7_URL = "https://api.llm7.io/v1/chat/completions"
+
+async def fallback_llm7_sync(messages: list, model: str = "default") -> dict:
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer unused"}
+    payload = {"model": "default", "messages": messages, "stream": False}
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        resp = await client.post(LLM7_URL, json=payload, headers=headers)
+        if resp.status_code == 200:
+            return resp.json()
+        raise Exception(f"LLM7 returned HTTP {resp.status_code}")
+
+async def fallback_llm7_stream(messages: list, model: str = "default") -> AsyncGenerator[str, None]:
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer unused"}
+    payload = {"model": "default", "messages": messages, "stream": True}
+    async with httpx.AsyncClient(timeout=35.0) as client:
+        async with client.stream("POST", LLM7_URL, json=payload, headers=headers) as resp:
+            if resp.status_code == 200:
+                async for line in resp.aiter_lines():
+                    if line:
+                        yield f"{line}\n\n"
+                return
+            raise Exception(f"LLM7 stream returned HTTP {resp.status_code}")
+
 async def fallback_pollinations_sync(messages: list) -> dict:
     headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
     payload = {"model": "openai", "messages": messages, "stream": False}
@@ -209,8 +232,8 @@ async def chat_completions(request: Request):
                                     if line:
                                         yield f"{line}\n\n"
                                 return
-                            # If Groq fails, fall back to Tier 2
-                            async for chunk in fallback_pollinations_stream(messages):
+                            # If Groq fails, fall back to LLM7
+                            async for chunk in fallback_llm7_stream(messages):
                                 yield chunk
                 return StreamingResponse(stream_groq(), media_type="text/event-stream")
             else:
@@ -221,16 +244,15 @@ async def chat_completions(request: Request):
         except Exception as e:
             print(f"[Gateway] Groq unavailable ({e}), trying next tier...")
 
-    # 2. Tier 2: Upstream Local Gateways (FreeLLMAPI, Puter-Pool, Aurora) if active
-    for name, url in [("freellmapi", "http://localhost:3001/v1/chat/completions"),
-                      ("puter_pool", "http://localhost:4000/v1/chat/completions"),
-                      ("aurora", "http://localhost:8080/v1/chat/completions")]:
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as probe_client:
-                # Fast probe
-                pass
-        except Exception:
-            pass
+    # 2. Tier 2: LLM7.io (Zero-Key Anonymous High-Speed Cloud)
+    try:
+        if stream:
+            return StreamingResponse(fallback_llm7_stream(messages, model), media_type="text/event-stream")
+        else:
+            data = await fallback_llm7_sync(messages, model)
+            return JSONResponse(content=data)
+    except Exception as e_llm7:
+        print(f"[Gateway] Tier 2 (LLM7) failed ({e_llm7}), trying Tier 3 (Pollinations)...")
 
     # 3. Tier 3: Zero-Key Online Fallback (Pollinations AI)
     try:
@@ -239,8 +261,8 @@ async def chat_completions(request: Request):
         else:
             data = await fallback_pollinations_sync(messages)
             return JSONResponse(content=data)
-    except Exception as e:
-        print(f"[Gateway] Tier 3 (Pollinations) failed ({e}). Reaching Tier 4 (Local Ollama Safety Net)...")
+    except Exception as e_poll:
+        print(f"[Gateway] Tier 3 (Pollinations) failed ({e_poll}). Reaching Tier 4 (Local Ollama Safety Net)...")
 
     # 4. Tier 4: Local Offline Safety Net (Ollama - final unkillable fallback)
     try:
